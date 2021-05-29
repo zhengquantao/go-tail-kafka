@@ -4,14 +4,21 @@ import (
 	"fmt"
 	"github.com/Shopify/sarama"
 	"sync"
+	"time"
 )
+
+type logData struct {
+	topic string
+	data  string
+}
 
 var (
-	producer sarama.SyncProducer
-	consumer sarama.Consumer
+	producer    sarama.SyncProducer
+	consumer    sarama.Consumer
+	logDataChan chan *logData
 )
 
-func Init(addr []string) (err error) {
+func Init(addr []string, maxSize int) (err error) {
 	config := sarama.NewConfig()
 	// 发送完数据需要leader和follow都确认
 	config.Producer.RequiredAcks = sarama.WaitForAll
@@ -26,22 +33,42 @@ func Init(addr []string) (err error) {
 		fmt.Println("producer closed, err:", err)
 		return
 	}
+	// 初始化lodDataChan
+	logDataChan = make(chan *logData, maxSize)
+	// 后台启动
+	go sendToKafka()
 	return
 }
 
-func SendToKafka(topic string, data string) {
-	// 构造一个消息
-	msg := &sarama.ProducerMessage{}
-	msg.Topic = topic
-	msg.Value = sarama.StringEncoder(data)
-	// 发送消息
-	pid, offset, err := producer.SendMessage(msg)
-	if err != nil {
-		fmt.Println("send msg failed, err:", err)
-		return
+func SendToChan(topic, data string) {
+	msg := &logData{
+		topic: topic,
+		data:  data,
 	}
-	fmt.Printf("pid:%v offset:%v\n", pid, offset)
-	fmt.Println("发送成功~")
+	logDataChan <- msg
+}
+
+func sendToKafka() {
+	for {
+		select {
+		case logData := <-logDataChan:
+			// 构造一个消息
+			msg := &sarama.ProducerMessage{}
+			msg.Topic = logData.topic
+			msg.Value = sarama.StringEncoder(logData.data)
+			// 发送消息
+			pid, offset, err := producer.SendMessage(msg)
+			if err != nil {
+				fmt.Println("send msg failed, err:", err)
+				return
+			}
+			fmt.Printf("pid:%v offset:%v\n", pid, offset)
+			fmt.Println("发送成功~")
+		default:
+			time.Sleep(time.Millisecond * 50)
+		}
+	}
+
 }
 
 func ConsumeFromKafka(topic string, addr []string) {
